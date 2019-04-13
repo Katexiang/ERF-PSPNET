@@ -19,4 +19,4 @@ This repository serves as a real-time semantic segmentation networks, which is d
 The useage is very easy, you only need to download the code, and create a file folder named ***dataset***, and create another four file folders under the dataset named ***train, trainannot, val, valannot*** ,and put into the data we want to train or eval like the example in the repository.
 
 ## Note
-In the future, I will update the demo code for video, a improved version network and loss-function for specific tasks.
+In the future, I will update the demo code for video, a improved version network and loss-function like IAL for specific tasks.
