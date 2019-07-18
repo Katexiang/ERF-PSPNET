@@ -13,7 +13,7 @@ Python 3.6.5
 ```
 
 ## Description
-This repository serves as a real-time semantic segmentation networks, which is designed for the assistance for visually-impaired people. The code not only implements the tensorflow-version erf-pspnet, but also implements the code for mIOU calculation which haven't been found in other tf-version's code. Our code combines the training and evaluating stages together, which records every claesses' ioU after one epoch, and fulfill visualization supervision during training.
+This repository serves as a real-time semantic segmentation networks, which is designed for the assistance for visually-impaired people. The code not only implements the tensorflow-version erf-pspnet, but also implements the code for mIOU calculation which haven't been found in other tf-version's code. Our code combines the training and evaluating stages together, which records every claesses' ioU after one epoch, and fulfill visualization supervision during training. In addition, we adapt ***IAL*** which is a loss function for pushing model to foucs on important classes. And we implement BiERF-PSPNet which is inspired by BiSeNet.
 
 ## Useage
 The useage is very easy, you only need to download the code, and create a file folder named ***dataset***, and create another four file folders under the dataset named ***train, trainannot, val, valannot*** ,and put into the data we want to train or eval like the example in the repository.
