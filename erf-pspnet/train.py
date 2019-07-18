@@ -1,5 +1,4 @@
 import tensorflow as tf
-from tensorflow.contrib.framework.python.ops.variables import get_or_create_global_step
 from tensorflow.python.platform import tf_logging as logging
 import os
 import time
@@ -9,16 +8,15 @@ import model
 import random
 import csv
 import math
-slim = tf.contrib.slim
 
 #==============INPUT ARGUMENTS==================
 flags = tf.app.flags
 
 #Directory arguments
 flags.DEFINE_string('dataset_dir', './dataset', 'The dataset directory to find the train, validation and test images.')
-flags.DEFINE_string('logdir', './log/camyuan3', 'The log directory to save your checkpoint and event files.')
+flags.DEFINE_string('logdir', './log/camvid', 'The log directory to save your checkpoint and event files.')
 #Training arguments
-flags.DEFINE_integer('num_classes', 12, 'The number of classes to predict.')
+flags.DEFINE_integer('num_classes', 11, 'The number of classes to predict.')
 flags.DEFINE_integer('batch_size', 8, 'The batch_size for training.')
 flags.DEFINE_integer('eval_batch_size', 24, 'The batch size used for validation.')
 flags.DEFINE_integer('image_height',360, "The input height of the images.")
@@ -28,16 +26,18 @@ flags.DEFINE_integer('num_epochs_before_decay', 100, 'The number of epochs befor
 flags.DEFINE_float('weight_decay', 2e-4, "The weight decay for ENet convolution layers.")
 flags.DEFINE_float('learning_rate_decay_factor', 1e-1, 'The learning rate decay factor.')
 flags.DEFINE_float('initial_learning_rate', 1e-3, 'The initial learning rate for your training.')
+flags.DEFINE_integer('Start_train',True, "The input height of the images.")
 
 FLAGS = flags.FLAGS
 
-#==========NAME HANDLING FOR CONVENIENCE==============
+Start_train = flags.Start_train
+log_name = 'model.ckpt'
+
 num_classes = FLAGS.num_classes
 batch_size = FLAGS.batch_size
+eval_batch_size = FLAGS.eval_batch_size 
 image_height = FLAGS.image_height
 image_width = FLAGS.image_width
-eval_batch_size = FLAGS.eval_batch_size #Can be larger than train_batch as no need to backpropagate gradients.
-
 
 #Training parameters
 initial_learning_rate = FLAGS.initial_learning_rate
@@ -47,38 +47,35 @@ learning_rate_decay_factor = FLAGS.learning_rate_decay_factor
 weight_decay = FLAGS.weight_decay
 epsilon = 1e-8
 
-#Use median frequency balancing or not
-
-#Visualization and where to save images
-
-
 
 #Directories
 dataset_dir = FLAGS.dataset_dir
 logdir = FLAGS.logdir
 
-#===============DATASET FOR TRAINING AND EVALATING==================
+#===============PREPARATION FOR TRAINING==================
 #Get the images into a list
 image_files = sorted([os.path.join(dataset_dir, 'train', file) for file in os.listdir(dataset_dir + "/train") if file.endswith('.png')])
 annotation_files = sorted([os.path.join(dataset_dir, "trainannot", file) for file in os.listdir(dataset_dir + "/trainannot") if file.endswith('.png')])
-
 image_val_files = sorted([os.path.join(dataset_dir, 'val', file) for file in os.listdir(dataset_dir + "/val") if file.endswith('.png')])
 annotation_val_files = sorted([os.path.join(dataset_dir, "valannot", file) for file in os.listdir(dataset_dir + "/valannot") if file.endswith('.png')])
-
-
-
+#保存到excel
+csvname=logdir[6:]+'.csv'
+with  open(csvname,'a', newline='') as out:
+    csv_write = csv.writer(out,dialect='excel')
+    a=[str(i) for i in range(num_classes)]
+    csv_write.writerow(a)
 #Know the number steps to take before decaying the learning rate and batches per epoch
 num_batches_per_epoch = math.ceil(len(image_files) / batch_size)
 num_steps_per_epoch = num_batches_per_epoch
 decay_steps = int(num_epochs_before_decay * num_steps_per_epoch)
 
 #=================CLASS WEIGHTS===============================
+#Median frequency balancing class_weights
 
-class_weights=np.array([ 6.10711717,  4.57716287, 42.28705255,  3.46893819, 16.45916311,  9.60914246, 33.93236668, 33.06296333, 13.5811212 , 40.96211531,44.98280801, 0], dtype=np.float32)
-
-#=================DATA AUGUMENTATION WILL BE UPDATED IN THE FUTURE===============================
+class_weights=np.array([   4.57716287, 42.28705255,  3.46893819, 16.45916311,  9.60914246, 33.93236668, 33.06296333, 13.5811212 , 40.96211531,44.98280801,6.10711717], dtype=np.float32)
 
 def weighted_cross_entropy(onehot_labels, logits, class_weights):
+    #a=tf.reduce_sum(-tf.log(tf.clip_by_value(logits, 1e-10, 1.0))*(1-logits)*(1-logits)*onehot_labels*class_weights)
     a=tf.reduce_sum(-tf.log(tf.clip_by_value(logits, 1e-10, 1.0))*onehot_labels*class_weights)
     return a
 
@@ -89,40 +86,25 @@ def decode(a,b):
     a = tf.image.convert_image_dtype(a, dtype=tf.float32)
     b = tf.read_file(b)
     b = tf.image.decode_png(b,channels=1)
-    bb,bs,_=tf.image.sample_distorted_bounding_box(tf.shape(b),bounding_boxes=tf.constant([0.0,0.0,1.0,1.0],dtype=tf.float32,shape=[1,1,4]),min_object_covered=1)
-    a=tf.slice(a,bb,bs)
-    b=tf.slice(b,bb,bs)
-    a=tf.image.resize_images(a, [image_height,image_width],method=0)
-    b=tf.image.resize_images(b, [image_height,image_width],method=1)   
-    a.set_shape(shape=(image_height, image_width, 3))
-    b.set_shape(shape=(image_height, image_width,1))
-    return a,b
-
-
-def decodev(a,b):
-    a = tf.read_file(a)
-    a=tf.image.decode_image(a, channels=3)
-    a = tf.image.convert_image_dtype(a, dtype=tf.float32)
-    b = tf.read_file(b)
-    b = tf.image.decode_image(b)
     bb,bs,_=tf.image.sample_distorted_bounding_box(tf.shape(b),bounding_boxes=tf.constant([0.0,0.0,1.0,1.0],dtype=tf.float32,shape=[1,1,4]),min_object_covered=1.0)
     a=tf.slice(a,bb,bs)
     b=tf.slice(b,bb,bs)
     a=tf.image.resize_images(a, [image_height,image_width],method=0)
-    b=tf.image.resize_images(b, [image_height,image_width],method=1)
+    b=tf.image.resize_images(b, [image_height,image_width],method=1)  
     a.set_shape(shape=(image_height, image_width, 3))
     b.set_shape(shape=(image_height, image_width,1))
     return a,b
-	
-
-with  open('camyuan3.csv','a', newline='') as out:
-    csv_write = csv.writer(out,dialect='excel')
-    a=[str(i) for i in range(num_classes)]
-    csv_write.writerow(a)
-    
-
-
-
+def decodev(a,b):
+    a = tf.read_file(a)
+    a=tf.image.decode_png(a, channels=3)
+    a = tf.image.convert_image_dtype(a, dtype=tf.float32)
+    b = tf.read_file(b)
+    b = tf.image.decode_png(b,channels=1)
+    a=tf.image.resize_images(a, [image_height,image_width],method=0)
+    b=tf.image.resize_images(b, [image_height,image_width],method=1)     
+    a.set_shape(shape=(image_height, image_width, 3))
+    b.set_shape(shape=(image_height, image_width,1))
+    return a,b
 	
 def run():
     with tf.Graph().as_default() as graph:
@@ -138,33 +120,35 @@ def run():
         titerator = tdataset.make_initializable_iterator()
         images,annotations = titerator.get_next()		
 
-
-        logits, probabilities= model.train(images,numclasses=num_classes, shape=[image_height,image_width], l2=weight_decay,reuse=None,is_training=True)
-        annotations = tf.reshape(annotations, shape=[-1, image_height, image_width])
-        annotations_ohe = tf.one_hot(annotations, num_classes, axis=-1)
-        predictions = tf.argmax(probabilities, -1)
-        segmentation_output = tf.cast(predictions, dtype=tf.float32)
-        segmentation_output = tf.reshape(segmentation_output, shape=[-1, image_height, image_width, 1])
-        segmentation_ground_truth = tf.cast(annotations, dtype=tf.float32)
-        segmentation_ground_truth = tf.reshape(segmentation_ground_truth, shape=[-1, image_height, image_width, 1])
-        YANMO = tf.reduce_sum(1-annotations_ohe[:,:,:,-1])
 		
-        #Actually compute the loss
-
-        los = weighted_cross_entropy(logits=probabilities, onehot_labels=annotations_ohe, class_weights=class_weights)/YANMO
+        images_val = tf.convert_to_tensor(image_val_files)
+        annotations_val = tf.convert_to_tensor(annotation_val_files)
+        vdataset = tf.data.Dataset.from_tensor_slices((images_val,annotations_val))
+        vdataset = vdataset.map(decodev)
+        vdataset = vdataset.batch(eval_batch_size).repeat(num_epochs*3)
+        viterator = vdataset.make_initializable_iterator()
+        images_val,annotations_val = viterator.get_next()				
+		
+		
+		
+		
+		
+        #perform one-hot-encoding on the ground truth annotation to get same shape as the logits
+        _, probabilities= model.erfpsp(images,numclasses=num_classes, shape=[image_height,image_width], l2=weight_decay,reuse=None,is_training=True)
+        annotations = tf.reshape(annotations, shape=[-1, image_height, image_width])
+        raw_gt = tf.reshape(annotations, [-1,])
+        indices = tf.squeeze(tf.where(tf.greater(raw_gt,0)), 1)
+        gt = tf.cast(tf.gather(raw_gt, indices), tf.int32)	
+        gt_one = tf.one_hot(gt, num_classes, axis=-1)		
+        raw_prediction = tf.reshape(probabilities, [-1, num_classes])
+        prediction = tf.gather(raw_prediction, indices)
+        annotations_ohe = tf.one_hot(annotations, num_classes+1, axis=-1)
+        MASK = tf.reduce_sum(1-annotations_ohe[:,:,:,0])
+		
+        los=weighted_cross_entropy(gt_one, prediction, class_weights)/MASK
         loss=tf.losses.add_loss(los)
         total_loss = tf.losses.get_total_loss()
-
-        #Create the global step for monitoring the learning_rate and training.
-        global_step = get_or_create_global_step()
-
-
-
-
-
-
-
-
+        global_step =  tf.train.get_or_create_global_step()
         #Define your exponentially decaying learning rate
         lr = tf.train.exponential_decay(
             learning_rate = initial_learning_rate,
@@ -179,159 +163,141 @@ def run():
         updates_op = tf.group(*update_ops)
         #Create the train_op.
         with tf.control_dependencies([updates_op]):
-            train_op = slim.learning.create_train_op(total_loss, optimizer)
+            train_op = optimizer.minimize(total_loss,global_step=global_step)
 
-        predictions = tf.argmax(probabilities, -1)
-        accuracy, accuracy_update = tf.contrib.metrics.streaming_accuracy(predictions, annotations)
-        mean_IOU, mean_IOU_update = tf.contrib.metrics.streaming_mean_iou(predictions=predictions, labels=annotations, num_classes=num_classes)
-        metrics_op = tf.group(accuracy_update, mean_IOU_update)
-
+			
+        _, probabilities_val= model.erfpsp(images_val,numclasses=num_classes, shape=[image_height,image_width], l2=None,reuse=True,is_training=None)
+        raw_gt_v = tf.reshape(tf.reshape(annotations_val, shape=[-1, 1024, 2048]),[-1,])
+        indices_v = tf.squeeze(tf.where(tf.greater(raw_gt_v,0)), 1)
+        gt_v = tf.cast(tf.gather(raw_gt_v, indices_v), tf.int32)
+        gt_v = gt_v-1
+        gt_one_v = tf.one_hot(gt_v, num_classes, axis=-1)
+        raw_prediction_v = tf.argmax(tf.reshape(probabilities_val, [-1, num_classes]),-1)
+        prediction_v = tf.gather(raw_prediction_v, indices_v)
+        prediction_ohe_v = tf.one_hot(prediction_v, num_classes, axis=-1)
+        and_val=gt_one_v*prediction_ohe_v
+        and_sum=tf.reduce_sum(and_val,[0])
+        or_val=tf.to_int32((gt_one_v+prediction_ohe_v)>0.5)
+        or_sum=tf.reduce_sum(apor,axis=[0])
+        T_sum=tf.reduce_sum(gta_v,axis=[0])
+        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])		
         #Now we need to create a training step function that runs both the train_op, metrics_op and updates the global_step concurrently.
-        def train_step(sess, train_op, global_step, metrics_op):
-            '''
-            Simply runs a session for the three arguments provided and gives a logging on the time elapsed for each global step
-            '''
+        def train_step(sess, train_op, global_step ,loss=total_loss):
             #Check the time for each sess run
             start_time = time.time()
-            total_loss, global_step_count, accuracy_val, mean_IOU_val, _ = sess.run([train_op, global_step, accuracy, mean_IOU, metrics_op])
+            _,total_loss, global_step_count= sess.run([train_op,loss, global_step ])
             time_elapsed = time.time() - start_time
-
+            global_step_count=global_step_count+1
             #Run the logging to show some results
-            logging.info('global step %s: loss: %.4f (%.2f sec/step)    Current Streaming Accuracy: %.4f    Current Mean IOU: %.4f', global_step_count, total_loss, time_elapsed, accuracy_val, mean_IOU_val)
+            logging.info('global step %s: loss: %.4f (%.2f sec/step)', global_step_count, total_loss, time_elapsed)
 
-            return total_loss, accuracy_val, mean_IOU_val
-
-        #================VALIDATION BRANCH========================
-        #Load the files into one input queue
-        images_val = tf.convert_to_tensor(image_val_files)
-        annotations_val = tf.convert_to_tensor(annotation_val_files)
-        vdataset = tf.data.Dataset.from_tensor_slices((images_val,annotations_val))
-        vdataset = vdataset.map(decodev)
-        vdataset = vdataset.batch(eval_batch_size).repeat(num_epochs+5)
-        viterator = vdataset.make_initializable_iterator()
-        images_val,annotations_val = viterator.get_next()		
-        logits_val, probabilities_val= model.train(images_val,numclasses=num_classes, shape=[image_height,image_width], l2=weight_decay,reuse=True,is_training=False)
-        annotations_val = tf.reshape(annotations_val, shape=[-1, image_height, image_width])
-        annotations_ohe_val = tf.one_hot(annotations_val, num_classes, axis=-1)
-
-		
-        predictions_val = tf.argmax(probabilities_val, -1)
-        predictions_vals = tf.one_hot(predictions_val, num_classes, axis=-1)
-
-		
-		
-		
-        apand=annotations_ohe_val*predictions_vals
-        apands=tf.reduce_sum(apand,[0,1,2])
-        nor = tf.reshape((1-annotations_ohe_val[:,:,:,-1]),shape=[-1,image_height,image_width,1])
-        apor=tf.to_int32((annotations_ohe_val+predictions_vals)*nor>0.5)
-        apors=tf.reduce_sum(apor,axis=[0,1,2])
-        aptrue=tf.reduce_sum(annotations_ohe_val,axis=[0,1,2])
+            return total_loss
+        #Now finally create all the summaries you need to monitor and group them into one summary op.
         A = tf.Variable(tf.constant(0.0), dtype=tf.float32)
         a=tf.placeholder(shape=[],dtype=tf.float32)
-        mean_IOU_val=tf.assign(A, a)
-        vali_classiou=0.0;
-
-
-        def eval_step(sess,i ):
-
-            ands,trues,ors = sess.run([apands,aptrue,apors])
-
-            #Log some information
-            logging.info('STEP: %d ',i)
-
-            return  ands,trues,ors
-
-        #=====================================================
-
-        #Now finally create all the summaries you need to monitor and group them into one summary op.
+        Precision=tf.assign(A, a)
+        B = tf.Variable(tf.constant(0.0), dtype=tf.float32)
+        b=tf.placeholder(shape=[],dtype=tf.float32)
+        Recall=tf.assign(B, b)
+        C = tf.Variable(tf.constant(0.0), dtype=tf.float32)
+        c=tf.placeholder(shape=[],dtype=tf.float32)
+        mIOU=tf.assign(C, c)	
+        predictions = tf.argmax(probabilities, -1)
+        segmentation_output = tf.cast(tf.reshape((predictions+1)*255/num_classes, shape=[-1, image_height, image_width, 1]),tf.uint8)
+        segmentation_ground_truth = tf.cast(tf.reshape(tf.cast(annotations, dtype=tf.float32)*255/num_classes, shape=[-1, image_height, image_width, 1]),tf.uint8)		
         tf.summary.scalar('Monitor/Total_Loss', total_loss)
-        tf.summary.scalar('Monitor/training_accuracy', accuracy)
-        tf.summary.scalar('Monitor/validation_mean_IOU', mean_IOU_val)
-        tf.summary.scalar('Monitor/training_mean_IOU', mean_IOU)
+        tf.summary.scalar('Monitor/Precision', Precision)
+        tf.summary.scalar('Monitor/Recall_rate', Recall)
+        tf.summary.scalar('Monitor/mIoU', mIOU)
         tf.summary.scalar('Monitor/learning_rate', lr)
-        tf.summary.image('Images/original_image', images, max_outputs=1)
+        tf.summary.image('Images/original_image', realimg, max_outputs=1)
         tf.summary.image('Images/segmentation_output', segmentation_output, max_outputs=1)
         tf.summary.image('Images/segmentation_ground_truth', segmentation_ground_truth, max_outputs=1)
         my_summary_op = tf.summary.merge_all()
 
-        def train_sum(sess, train_op, global_step, metrics_op,sums,shu):
-            '''
-            Simply runs a session for the three arguments provided and gives a logging on the time elapsed for each global step
-            '''
-            #Check the time for each sess run
+        def train_sum(sess, train_op, global_step,sums,loss=total_loss,pre=0,recall=0,iou=0):
             start_time = time.time()
-            total_loss, global_step_count, accuracy_val, mean_IOU_val,ss, _ = sess.run([train_op, global_step, accuracy, mean_IOU,sums ,metrics_op],feed_dict={a:shu})
+            _,total_loss, global_step_count,ss = sess.run([train_op,loss, global_step,sums ],feed_dict={a:pre,b:recall,c:iou})
             time_elapsed = time.time() - start_time
+            global_step_count=global_step_count+1
+            logging.info('global step %s: loss: %.4f (%.2f sec/step)', global_step_count, total_loss, time_elapsed)
 
-            #Run the logging to show some results
-            logging.info('global step %s: loss: %.4f (%.2f sec/step)    Current Streaming Accuracy: %.4f    Current Mean IOU: %.4f', global_step_count, total_loss, time_elapsed, accuracy_val, mean_IOU_val)
-
-            return total_loss, accuracy_val, mean_IOU_val,ss
-        #Define your supervisor for running a managed session. Do not run the summary_op automatically or else it will consume too much memory
-        sv = tf.train.Supervisor(logdir=logdir, summary_op=None, init_fn=None)
-        # Run the managed session
-        with sv.managed_session() as sess:
-            sess.run([viterator.initializer,titerator.initializer])
-            ors=np.zeros((num_classes), dtype=np.float32)
-            ans=np.zeros((num_classes), dtype=np.float32)
-            trues=np.zeros((num_classes), dtype=np.float32)
-            for i in range(math.ceil(len(image_val_files) / eval_batch_size)):
-                andss,truess,orss = eval_step(sess,i+1)
-                ans=ans+andss
-                ors=ors+orss
-                trues=trues+truess
-            vali_iou=ans/ors
-            vali_class=ans/trues
-            vali_classiou=np.mean(vali_iou[0:-1])
-            vali_classavg=np.mean(vali_class[0:-1])
-            print(vali_iou)
-            print(vali_classiou)
-            with open('camyuan3.csv','a', newline='') as out:
+            return total_loss,ss
+			
+        def eval_step(sess,i ):
+            and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,apors,R_sum])
+            #Log some information
+            logging.info('STEP: %d ',i)
+            return  and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch
+        def eval(num_class,csvname,session,image_val,eval_batch):
+            or_=np.zeros((num_class), dtype=np.float32)
+            and_=np.zeros((num_class), dtype=np.float32)			
+            T_=np.zeros((num_class), dtype=np.float32)			
+            R_=np.zeros((num_class), dtype=np.float32)			
+            for i in range(math.ceil(len(image_val) / eval_batch)):
+			    and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = eval_step(session,i+1)
+                and_=and_+and_eval_batch
+                or_=or_+or_eval_batch
+                T_=T_+T_eval_batch
+                R_=R_+R_eval_batch				
+            Recall_rate=and_/T_
+            Precision=and_/R_
+            IoU=and_/or_
+            mPrecision=np.mean(Precision)
+            mRecall_rate=np.mean(Recall_rate)
+            mIoU=np.mean(IoU)
+            print("Precision:")
+            print(Precision)
+            print("Recall rate:")
+            print(Recall_rate)
+            print("IoU:")
+            print(IoU)
+            print("mPrecision:")
+            print(mPrecision)
+            print("mRecall_rate:")
+            print(mRecall_rate)
+            print("mIoU")
+            print(mIoU)
+            with open(csvname,'a', newline='') as out:
                 csv_write = csv.writer(out,dialect='excel')
-                csv_write.writerow(vali_class[0:-1])
-                csv_write.writerow(vali_iou[0:-1])
-				
-            for step in range(int(num_steps_per_epoch * num_epochs)):
-                if step % num_batches_per_epoch == 0:
-                    logging.info('Epoch %s/%s', step/num_batches_per_epoch + 1, num_epochs)
+                csv_write.writerow(Precision)
+                csv_write.writerow(Recall_rate)
+                csv_write.writerow(IoU)
+            return mPrecision,mPrecision,mIoU
+        gpu_options = tf.GPUOptions(allow_growth=True)
+        config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
+        init = tf.global_variables_initializer()
+        saver=tf.train.Saver(max_to_keep=10)
+        with tf.Session(config=config) as sess:
+            sess.run(init)
+            sess.run([titerator.initializer,viterator.initializer])
+            step = 0;
+            if Start_train is not True:
+                #input the checkpoint address,and the step number.
+                checkpoint='./log/erfpsp/model.ckpt-37127'
+                saver.restore(sess, checkpoint)
+                step = 37127
+                sess.run(tf.assign(global_step,step))
+            summary_writer = tf.summary.FileWriter(logdir, sess.graph)
+            final = num_steps_per_epoch * num_epochs
+            for i in range(step,final,1):
+                if i % num_batches_per_epoch == 0:
+                    logging.info('Epoch %s/%s', i/num_batches_per_epoch + 1, num_epochs)
                     learning_rate_value = sess.run([lr])
                     logging.info('Current Learning Rate: %s', learning_rate_value)
-
-                
-                if step % min(num_steps_per_epoch, 10) == 0:
-                    loss, training_accuracy, training_mean_IOU,summaries = train_sum(sess, train_op, sv.global_step, metrics_op=metrics_op,sums=my_summary_op,shu=vali_classiou)
-                    sv.summary_computed(sess, summaries)
- 
+                    if i is not step:
+                        saver.save(sess, os.path.join(logdir,log_name),global_step=i)					
+                        mPrecision,mRecall_rate,mIoU=eval(num_class=num_classes,csvname=csvname,session=sess,image_val=image_val_files,eval_batch=eval_batch_size)                       				
+                if i % min(num_steps_per_epoch, 10) == 0:
+                    loss,summaries = train_sum(sess, train_op,global_step,sums=my_summary_op,loss=total_loss,pre=mPrecision,recall=mPrecision,iou=mIoU)
+                    summary_writer.add_summary(summaries,global_step=i+1)
                 else:
-                    loss, training_accuracy,training_mean_IOU = train_step(sess, train_op, sv.global_step, metrics_op=metrics_op)
-
-					
-					
-                if (step+1) % (num_steps_per_epoch ) == 0:
-                    ors=np.zeros((num_classes), dtype=np.float32)
-                    ans=np.zeros((num_classes), dtype=np.float32)
-                    trues=np.zeros((num_classes), dtype=np.float32)
-                    for i in range(math.ceil(len(image_val_files) / eval_batch_size)):
-                        andss,truess,orss = eval_step(sess,i+1)
-                        ans=ans+andss
-                        ors=ors+orss
-                        trues=trues+truess
-                    vali_iou=ans/ors
-                    vali_class=ans/trues
-                    vali_classiou=np.mean(vali_iou[0:-1])
-                    vali_classavg=np.mean(vali_class[0:-1])
-                    print(vali_iou)
-                    print(vali_classiou)
-                    with open('camyuan3.csv','a', newline='') as out:
-                        csv_write = csv.writer(out,dialect='excel')
-                        csv_write.writerow(vali_class[0:-1])
-                        csv_write.writerow(vali_iou[0:-1])
+                    loss = train_step(sess, train_op, global_step)
+            summary_writer.close()					
+            eval(num_class=num_classes,csvname=csvname,session=sess,image_val=image_val_files,eval_batch=eval_batch_size)
             logging.info('Final Loss: %s', loss)
-            logging.info('Final Training Accuracy: %s', training_accuracy)
-            logging.info('Final Training Mean IOU: %s', training_mean_IOU)
             logging.info('Finished training! Saving model to disk now.')
-            sv.saver.save(sess, sv.save_path, global_step = sv.global_step)
+            saver.save(sess,  os.path.join(logdir,log_name), global_step = final)
 
 
 if __name__ == '__main__':
