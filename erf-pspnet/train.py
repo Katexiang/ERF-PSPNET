@@ -16,7 +16,7 @@ flags = tf.app.flags
 flags.DEFINE_string('dataset_dir', './dataset', 'The dataset directory to find the train, validation and test images.')
 flags.DEFINE_string('logdir', './log/camvid', 'The log directory to save your checkpoint and event files.')
 #Training arguments
-flags.DEFINE_integer('num_classes', 11, 'The number of classes to predict.')
+flags.DEFINE_integer('num_classes', 19, 'The number of classes to predict.')
 flags.DEFINE_integer('batch_size', 8, 'The batch_size for training.')
 flags.DEFINE_integer('eval_batch_size', 24, 'The batch size used for validation.')
 flags.DEFINE_integer('image_height',360, "The input height of the images.")
@@ -26,11 +26,11 @@ flags.DEFINE_integer('num_epochs_before_decay', 100, 'The number of epochs befor
 flags.DEFINE_float('weight_decay', 2e-4, "The weight decay for ENet convolution layers.")
 flags.DEFINE_float('learning_rate_decay_factor', 1e-1, 'The learning rate decay factor.')
 flags.DEFINE_float('initial_learning_rate', 1e-3, 'The initial learning rate for your training.')
-flags.DEFINE_integer('Start_train',True, "The input height of the images.")
+flags.DEFINE_boolean('Start_train',True, "The input height of the images.")
 
 FLAGS = flags.FLAGS
 
-Start_train = flags.Start_train
+Start_train = FLAGS.Start_train
 log_name = 'model.ckpt'
 
 num_classes = FLAGS.num_classes
@@ -72,7 +72,10 @@ decay_steps = int(num_epochs_before_decay * num_steps_per_epoch)
 #=================CLASS WEIGHTS===============================
 #Median frequency balancing class_weights
 
-class_weights=np.array([   4.57716287, 42.28705255,  3.46893819, 16.45916311,  9.60914246, 33.93236668, 33.06296333, 13.5811212 , 40.96211531,44.98280801,6.10711717], dtype=np.float32)
+class_weights = np.array(   [40.69042899, 47.6765088 , 12.70029695, 45.20543212, 45.78372173,
+       45.82527748, 48.40614895, 42.75593537,  3.36208549, 14.03151966,
+        4.9866471 , 39.25440643, 36.51259517, 32.81231979,  6.69824427,
+       33.55546509, 18.48781934, 32.97432129, 46.28665742],dtype=np.float32) 
 
 def weighted_cross_entropy(onehot_labels, logits, class_weights):
     #a=tf.reduce_sum(-tf.log(tf.clip_by_value(logits, 1e-10, 1.0))*(1-logits)*(1-logits)*onehot_labels*class_weights)
@@ -90,10 +93,12 @@ def decode(a,b):
     a=tf.slice(a,bb,bs)
     b=tf.slice(b,bb,bs)
     a=tf.image.resize_images(a, [image_height,image_width],method=0)
-    b=tf.image.resize_images(b, [image_height,image_width],method=1)  
+    b=tf.image.resize_images(b, [image_height,image_width],method=1)
+    c=tf.image.convert_image_dtype(a, dtype=tf.uint8)	
     a.set_shape(shape=(image_height, image_width, 3))
     b.set_shape(shape=(image_height, image_width,1))
-    return a,b
+    c.set_shape(shape=(image_height, image_width, 3))
+    return a,b,c
 def decodev(a,b):
     a = tf.read_file(a)
     a=tf.image.decode_png(a, channels=3)
@@ -118,7 +123,7 @@ def run():
         tdataset = tdataset.map(decode)
         tdataset = tdataset.shuffle(100).batch(batch_size).repeat(num_epochs)
         titerator = tdataset.make_initializable_iterator()
-        images,annotations = titerator.get_next()		
+        images,annotations,realimg = titerator.get_next()		
 
 		
         images_val = tf.convert_to_tensor(image_val_files)
@@ -128,7 +133,6 @@ def run():
         vdataset = vdataset.batch(eval_batch_size).repeat(num_epochs*3)
         viterator = vdataset.make_initializable_iterator()
         images_val,annotations_val = viterator.get_next()				
-		
 		
 		
 		
@@ -178,9 +182,12 @@ def run():
         and_val=gt_one_v*prediction_ohe_v
         and_sum=tf.reduce_sum(and_val,[0])
         or_val=tf.to_int32((gt_one_v+prediction_ohe_v)>0.5)
-        or_sum=tf.reduce_sum(apor,axis=[0])
-        T_sum=tf.reduce_sum(gta_v,axis=[0])
-        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])		
+        or_sum=tf.reduce_sum(or_val,axis=[0])
+        T_sum=tf.reduce_sum(gt_one_v,axis=[0])
+        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])
+        mPrecision=0
+        mRecall_rate=0
+        mIoU=0		
         #Now we need to create a training step function that runs both the train_op, metrics_op and updates the global_step concurrently.
         def train_step(sess, train_op, global_step ,loss=total_loss):
             #Check the time for each sess run
@@ -225,17 +232,17 @@ def run():
             return total_loss,ss
 			
         def eval_step(sess,i ):
-            and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,apors,R_sum])
+            and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,T_sum,R_sum])
             #Log some information
             logging.info('STEP: %d ',i)
-            return  and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch
+            return  and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch
         def eval(num_class,csvname,session,image_val,eval_batch):
             or_=np.zeros((num_class), dtype=np.float32)
             and_=np.zeros((num_class), dtype=np.float32)			
             T_=np.zeros((num_class), dtype=np.float32)			
             R_=np.zeros((num_class), dtype=np.float32)			
             for i in range(math.ceil(len(image_val) / eval_batch)):
-                and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = eval_step(session,i+1)
+                and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = eval_step(session,i+1)
                 and_=and_+and_eval_batch
                 or_=or_+or_eval_batch
                 T_=T_+T_eval_batch
@@ -289,7 +296,7 @@ def run():
                         saver.save(sess, os.path.join(logdir,log_name),global_step=i)					
                         mPrecision,mRecall_rate,mIoU=eval(num_class=num_classes,csvname=csvname,session=sess,image_val=image_val_files,eval_batch=eval_batch_size)                       				
                 if i % min(num_steps_per_epoch, 10) == 0:
-                    loss,summaries = train_sum(sess, train_op,global_step,sums=my_summary_op,loss=total_loss,pre=mPrecision,recall=mPrecision,iou=mIoU)
+                    loss,summaries = train_sum(sess, train_op,global_step,sums=my_summary_op,loss=total_loss,pre=mPrecision,recall=mRecall_rate,iou=mIoU)
                     summary_writer.add_summary(summaries,global_step=i+1)
                 else:
                     loss = train_step(sess, train_op, global_step)
