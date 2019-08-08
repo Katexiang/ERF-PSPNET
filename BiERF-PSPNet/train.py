@@ -26,10 +26,10 @@ flags.DEFINE_integer('num_epochs_before_decay', 100, 'The number of epochs befor
 flags.DEFINE_float('weight_decay', 2e-4, "The weight decay for ENet convolution layers.")
 flags.DEFINE_float('learning_rate_decay_factor', 1e-1, 'The learning rate decay factor.')
 flags.DEFINE_float('initial_learning_rate', 1e-3, 'The initial learning rate for your training.')
-flags.DEFINE_integer('Start_train',True, "The input height of the images.")
+flags.DEFINE_boolean('Start_train',True, "The input height of the images.")
 FLAGS = flags.FLAGS
 
-Start_train = flags.Start_train
+Start_train = FLAGS.Start_train
 log_name = 'model.ckpt'
 
 num_classes = FLAGS.num_classes
@@ -155,7 +155,8 @@ def run():
         annotations = tf.reshape(annotations, shape=[-1, image_height, image_width])
         raw_gt = tf.reshape(annotations, [-1,])
         indices = tf.squeeze(tf.where(tf.less_equal(raw_gt,num_classes-1)), 1)
-        gt = tf.cast(tf.gather(raw_gt, indices), tf.int32)	
+        gt = tf.cast(tf.gather(raw_gt, indices), tf.int32)
+        gt = gt - 1
         gt_one = tf.one_hot(gt, num_classes, axis=-1)		
         raw_prediction = tf.reshape(probabilities, [-1, num_classes])
         prediction = tf.gather(raw_prediction, indices)
@@ -164,7 +165,7 @@ def run():
 		
 		
         annotations_ohe = tf.one_hot(annotations, num_classes, axis=-1)
-        MASK = tf.reduce_sum(1-annotations_ohe[:,:,:,-1])
+        MASK = tf.reduce_sum(1-annotations_ohe[:,:,:,0])
 		
         los=weighted_cross_entropy(gt_one, prediction, class_weights)/MASK
         loss=tf.losses.add_loss(los)
@@ -199,9 +200,12 @@ def run():
         and_val=gt_one_v*prediction_ohe_v
         and_sum=tf.reduce_sum(and_val,[0])
         or_val=tf.to_int32((gt_one_v+prediction_ohe_v)>0.5)
-        or_sum=tf.reduce_sum(apor,axis=[0])
+        or_sum=tf.reduce_sum(or_val,axis=[0])
         T_sum=tf.reduce_sum(gta_v,axis=[0])
-        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])		
+        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])
+        mPrecision=0
+        mRecall_rate=0
+        mIoU=0	
         #Now we need to create a training step function that runs both the train_op, metrics_op and updates the global_step concurrently.
         def train_step(sess, train_op, global_step ,loss=total_loss):
             '''
@@ -248,17 +252,17 @@ def run():
             return total_loss,ss
 			
         def eval_step(sess,i ):
-            and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,apors,R_sum])
+            and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,T_sum,R_sum])
             #Log some information
             logging.info('STEP: %d ',i)
-            return  and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch
+            return  and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch
         def eval(num_class,csvname,session,image_val,eval_batch):
             or_=np.zeros((num_class), dtype=np.float32)
             and_=np.zeros((num_class), dtype=np.float32)			
             T_=np.zeros((num_class), dtype=np.float32)			
             R_=np.zeros((num_class), dtype=np.float32)			
             for i in range(math.ceil(len(image_val) / eval_batch)):
-                and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = eval_step(session,i+1)
+                and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = eval_step(session,i+1)
                 and_=and_+and_eval_batch
                 or_=or_+or_eval_batch
                 T_=T_+T_eval_batch
